@@ -1,6 +1,8 @@
 import Algorithmia
 import yaml
 import traceback
+import colorsys
+import requests
 
 ###
 # Credit:
@@ -25,8 +27,9 @@ sentiment_averages = {
     "negative": 0,
     "neutral": 0,
     "positive": 0,
-    "total": 0,
+    "total": 0
 }
+
 
 def display_current_mood(channel):
     reply = ""
@@ -42,8 +45,139 @@ def display_current_mood(channel):
             continue
         reply += "{}: {}%\n ".format(k.capitalize(), v)
 
+    # todo - remove, this is meant to be sent out
+    color = get_current_mood_color()
+    reply += "Color | HLS: {}, {}, {} | RGB: {}, {}, {}, | Compound: {}\n"\
+        .format(
+            color["hls"][0], color["hls"][1], color["hls"][2],
+            color["rgb"][0], color["rgb"][1], color["rgb"][2],
+            color["compound"])
+
     outputs.append([channel, str(reply)])
     return
+
+
+def get_current_mood_color():
+
+    # utility
+    def round_up(x):
+        return round(x, 2)
+
+    # translate sentiment into RGB
+    r = sentiment_averages["negative"]
+    g = sentiment_averages["neutral"]
+    b = sentiment_averages["positive"]
+
+    # calculate HLS out of RGB
+    hls = colorsys.rgb_to_hls(r, g, b)
+
+    # calculate a single point on a scale 0 - 4
+    #
+    # scale definition and RGB thresholds:
+    # 0 -> stressed, upset          rgb(252, 102, 33)
+    # 1 -> calm, peaceful           rgb(11, 36, 251)
+    # 2 -> happy, deeply relaxed    rgb(52, 55, 151)
+    # 3 -> love, sensual            rgb(127, 15, 126)
+    # 4 -> warm, curious, loving    rgb(252, 40, 252)
+
+    # neutral by default
+    compound = 1
+
+    # todo: use percentage instead of absolute values, also do we need ranges?
+    if r >= 252 and g >= 102 and b <= 33:
+        # stressed
+        compound = 0
+    elif r <= 52 and g <= 55 and b >= 151:
+        # happy
+        compound = 2
+    elif r <= 127 and g <= 15 and b >= 126:
+        # sensual
+        compound = 3
+    elif r >= 252 and g <= 40 and b >= 252:
+        # lovable
+        compound = 3
+
+    return {
+        "rgb": [round_up(r), round_up(g), round_up(b)],
+        "hls": [round_up(hls[0]), round_up(hls[1]), round_up(hls[2])],
+        "compound": compound
+    }
+
+
+def publish_current_mood():
+    # get mood color
+    color = get_current_mood_color()
+
+    # todo talk directly to the Philips Hue api?
+
+    ## update status file on dropbox
+    token = CONFIG["DROPBOX_TOKEN"]
+
+    # delete an existing file in the current folder
+    req = requests.post("https://api.dropboxapi.com/2/files/delete",
+                        headers = {"Content-Type": "application/json",
+                                   "Authorization": "Bearer {}".format(token)},
+                        json = {"path": "/current/mood"})
+    print "Delete the existing status: HTTP {}, text: {}".format(req.status_code, req.text)
+
+    # resolve compound color to a folder name
+    folder = color["compound"]
+
+    # copy the corresponding file to the current folder
+    req = requests.post("https://api.dropboxapi.com/2/files/copy",
+                        headers = {"Content-Type": "application/json",
+                                 "Authorization": "Bearer {}".format(token)},
+                        json = {
+                            "from_path": "/{}/mood".format(folder),
+                            "to_path": "/current/mood"
+                        })
+    print "Publish new status: HTTP {}, text: {}".format(req.status_code, req.text)
+
+    return
+
+
+def resolve_mood(text):
+    try:
+        sentence = {
+            "sentence": text
+        }
+
+        result = ALGORITHM.pipe(sentence)
+        if not result or not result.result:
+            return
+
+        sentiment = result.result[0]
+
+        verdict = "neutral"
+        overall_sentiment = sentiment.get('compound', 0)
+
+        if overall_sentiment > 0:
+            sentiment_results["positive"] += 1
+            verdict = "positive"
+        elif overall_sentiment < 0:
+            sentiment_results["negative"] += 1
+            verdict = "negative"
+        else:
+            sentiment_results["neutral"] += 1
+
+        # increment counter so we can work out averages
+        sentiment_averages["total"] += 1
+
+        for k, v in sentiment_results.iteritems():
+            if k == "total" or v == 0:
+                continue
+            sentiment_averages[k] = round(
+                float(v) / float(sentiment_averages["total"]) * 100, 2)
+
+        # print to the console what just happened
+        print 'Comment "{}" was {}, compound result {}'.format(text, verdict, overall_sentiment)
+
+    except Exception as exception:
+        # a few things can go wrong but the important thing is keep going
+        # print the error and then move on
+        print "Something went wrong processing the text: {}".format(text)
+        print traceback.format_exc(exception)
+
 
 def process_message(data):
 
@@ -55,55 +189,19 @@ def process_message(data):
     # remove any odd encoding
     text = text.encode('utf-8')
 
+    channel = data.get("channel", None)
+    if not channel:
+        return
+
     if "current mood?" in text:
-        return display_current_mood(data.get("channel", None))
+        return display_current_mood(channel)
 
     # don't log the current mood reply!
     if text.startswith('Positive:'):
         return
 
-    try:
-        sentence = {
-            "sentence": text
-        }
+    # update overall sentiment
+    resolve_mood(text)
 
-        result = ALGORITHM.pipe(sentence)
-
-        results = result.result[0]
-
-        verdict = "neutral"
-        compound_result = results.get('compound', 0)
-
-        if compound_result == 0:
-            sentiment_results["neutral"] += 1
-        elif compound_result > 0:
-            sentiment_results["positive"] += 1
-            verdict = "positive"
-        elif compound_result < 0:
-            sentiment_results["negative"] += 1
-            verdict = "negative"
-
-        # increment counter so we can work out averages
-        sentiment_averages["total"] += 1
-
-        for k, v in sentiment_results.iteritems():
-            if k == "total":
-                continue
-            if v == 0:
-                continue
-            sentiment_averages[k] = round(
-                float(v) / float(sentiment_averages["total"]) * 100, 2)
-
-        if compound_result < -0.75:
-            outputs.append([data["channel"], "Easy there, negative Nancy!"])
-
-        # print to the console what just happened
-        print 'Comment "{}" was {}, compound result {}'.format(text, verdict, compound_result)
-
-    except Exception as exception:
-        # a few things can go wrong but the important thing is keep going
-        # print the error and then move on
-        print "Something went wrong processing the text: {}".format(text)
-        print traceback.format_exc(exception)
-
-
+    # publish results
+    publish_current_mood()
