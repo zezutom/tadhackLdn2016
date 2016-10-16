@@ -1,0 +1,4 @@
+Algorithmia
+requests
+pyyaml
+playsound
