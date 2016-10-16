@@ -73,34 +73,31 @@ def get_current_mood_color():
 
     # calculate a single point on a scale 0 - 4
     #
-    # scale definition and RGB thresholds:
-    # 0 -> stressed, upset          rgb(252, 102, 33)
-    # 1 -> calm, peaceful           rgb(11, 36, 251)
-    # 2 -> happy, deeply relaxed    rgb(52, 55, 151)
-    # 3 -> love, sensual            rgb(127, 15, 126)
-    # 4 -> warm, curious, loving    rgb(252, 40, 252)
-
-    # neutral by default
-    compound = 1
-
-    # todo: use percentage instead of absolute values, also do we need ranges?
-    if r >= 252 and g >= 102 and b <= 33:
-        # stressed
-        compound = 0
-    elif r <= 52 and g <= 55 and b >= 151:
-        # happy
-        compound = 2
-    elif r <= 127 and g <= 15 and b >= 126:
-        # sensual
-        compound = 3
-    elif r >= 252 and g <= 40 and b >= 252:
-        # lovable
-        compound = 3
+    # scale definition:
+    # 0 -> stressed, upset
+    # 1 -> calm, peaceful
+    # 2 -> happy, deeply relaxed
+    # 3 -> love, sensual
+    # 4 -> warm, curious, loving
+    def get_mood(hapiness):
+        print "Happiness level: {}".format(str(hapiness))
+        mood = 2 # happy and relaxed by default
+        if hapiness > 80:
+            mood = 4
+        elif hapiness > 60:
+            mood = 3
+        elif hapiness > 40:
+            mood = 2
+        elif hapiness > 20:
+            mood = 1
+        else:
+            mood = 0
+        return mood
 
     return {
         "rgb": [round_up(r), round_up(g), round_up(b)],
         "hls": [round_up(hls[0]), round_up(hls[1]), round_up(hls[2])],
-        "compound": compound
+        "compound": get_mood(b)
     }
 
 
@@ -115,9 +112,9 @@ def publish_current_mood():
 
     # delete an existing file in the current folder
     req = requests.post("https://api.dropboxapi.com/2/files/delete",
-                        headers = {"Content-Type": "application/json",
+                        headers={"Content-Type": "application/json",
                                    "Authorization": "Bearer {}".format(token)},
-                        json = {"path": "/current/mood"})
+                        json={"path": "/current/mood"})
     print "Delete the existing status: HTTP {}, text: {}".format(req.status_code, req.text)
 
     # resolve compound color to a folder name
@@ -125,9 +122,9 @@ def publish_current_mood():
 
     # copy the corresponding file to the current folder
     req = requests.post("https://api.dropboxapi.com/2/files/copy",
-                        headers = {"Content-Type": "application/json",
+                        headers={"Content-Type": "application/json",
                                  "Authorization": "Bearer {}".format(token)},
-                        json = {
+                        json={
                             "from_path": "/{}/mood".format(folder),
                             "to_path": "/current/mood"
                         })
